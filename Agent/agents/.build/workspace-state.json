@@ -1,0 +1,27 @@
+{
+  "object" : {
+    "artifacts" : [
+
+    ],
+    "dependencies" : [
+      {
+        "basedOn" : null,
+        "packageRef" : {
+          "identity" : "appleeventbridges",
+          "kind" : "fileSystem",
+          "location" : "/Users/toddbruss/Documents/GitHub/Agent/AppleEventBridges",
+          "name" : "AppleEventBridges"
+        },
+        "state" : {
+          "name" : "fileSystem",
+          "path" : "/Users/toddbruss/Documents/GitHub/Agent/AppleEventBridges"
+        },
+        "subpath" : "appleeventbridges"
+      }
+    ],
+    "prebuilts" : [
+
+    ]
+  },
+  "version" : 7
+}
