@@ -383,7 +383,12 @@ func organizeEmails() {
         print("\n🎯 Organizing into \(targetFolders.count) folder(s)...")
         
         // Process messages
-        let processCount = limit != nil ? min(limit!, totalMessages) : totalMessages
+        let processCount: Int
+        if let lim = limit {
+            processCount = min(lim, totalMessages)
+        } else {
+            processCount = totalMessages
+        }
         var movedThisAccount = 0
         
         for i in 0..<processCount {

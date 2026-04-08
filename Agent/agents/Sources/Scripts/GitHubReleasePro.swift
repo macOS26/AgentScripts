@@ -61,9 +61,12 @@ public func scriptMain() -> Int32 {
             try whichTask.run()
             whichTask.waitUntilExit()
             let data = whichPipe.fileHandleForReading.readDataToEndOfFile()
-            if let output = String(data: data, encoding: .utf8), !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                ghPath = output.trimmingCharacters(in: .whitespacesAndNewlines)
-                print("Found gh in PATH: \(ghPath!)")
+            if let output = String(data: data, encoding: .utf8) {
+                let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    ghPath = trimmed
+                    print("Found gh in PATH: \(trimmed)")
+                }
             }
         } catch {
             print("Error finding gh: \(error)")

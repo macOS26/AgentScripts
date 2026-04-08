@@ -70,9 +70,10 @@ class Recorder: @unchecked Sendable {
         if let app = element {
             var windowRef: AnyObject?
             AXUIElementCopyAttributeValue(app, kAXWindowAttribute as CFString, &windowRef)
-            if let window = windowRef {
+            if let window = windowRef, CFGetTypeID(window) == AXUIElementGetTypeID() {
+                let axWindow = window as! AXUIElement
                 var titleRef: AnyObject?
-                AXUIElementCopyAttributeValue(window as! AXUIElement, kAXTitleAttribute as CFString, &titleRef)
+                AXUIElementCopyAttributeValue(axWindow, kAXTitleAttribute as CFString, &titleRef)
                 windowTitle = (titleRef as? String)
             }
         }
