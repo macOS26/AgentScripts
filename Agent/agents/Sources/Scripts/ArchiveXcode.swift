@@ -2,26 +2,188 @@ import Foundation
 
 @_cdecl("script_main")
 public func scriptMain() -> Int32 {
-    // Configuration - can override via AGENT_SCRIPT_ARGS
+    // Dynamic Archive & Notarization for any Xcode project
+    //
+    // Usage via AGENT_SCRIPT_ARGS:
+    //   "/path/to/project [scheme] [teamID]"
+    //
+    // If only a project path is given, scheme and teamID are auto-detected:
+    //   - scheme: derived from the .xcodeproj bundle name
+    //   - teamID: read from DEVELOPMENT_TEAM in project.pbxproj
+    //   - projectFile: first .xcodeproj found in the directory
+    
     let args = ProcessInfo.processInfo.environment["AGENT_SCRIPT_ARGS"] ?? ""
     let parts = args.split(separator: " ").map(String.init)
     
-    let projectPath = parts.count > 0 ? parts[0] : "/Users/toddbruss/Documents/GitHub/Agent/AgentXcode"
-    let scheme = parts.count > 1 ? parts[1] : "Agent!"
-    let projectFile = parts.count > 2 ? parts[2] : "\(projectPath)/Agent.xcodeproj"
-    let archivePath = parts.count > 3 ? parts[3] : "\(projectPath)/build/Agent.xcarchive"
-    let teamID = parts.count > 4 ? parts[4] : "469UCUB275"
+    // --- Dynamic project detection helpers ---
+    
+    // Find first .xcodeproj in a directory
+    func findXcodeProject(in dir: String) -> String? {
+        let contents = try? FileManager.default.contentsOfDirectory(atPath: dir)
+        return contents?.first(where: { $0.hasSuffix(".xcodeproj") })
+    }
+    
+    // Derive scheme name from .xcodeproj filename
+    func schemeFromProject(_ projName: String) -> String {
+        return (projName as NSString).deletingPathExtension
+    }
+    
+    // Read DEVELOPMENT_TEAM from project.pbxproj
+    func teamIDFromProject(_ pbxprojPath: String) -> String? {
+        guard let data = FileManager.default.contents(atPath: pbxprojPath),
+              let content = String(data: data, encoding: .utf8) else { return nil }
+        let pattern = "DEVELOPMENT_TEAM\\s*=\\s*([A-Z0-9]+);"
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: content, range: NSRange(content.startIndex..., in: content)),
+              let range = Range(match.range(at: 1), in: content) else { return nil }
+        return String(content[range])
+    }
+    
+    // Detect build configuration (first Release-like config from project.pbxproj)
+    func buildConfigFromProject(_ pbxprojPath: String) -> String {
+        guard let data = FileManager.default.contents(atPath: pbxprojPath),
+              let content = String(data: data, encoding: .utf8) else { return "Release" }
+        // Look for build configuration names in the xcconfig list
+        let pattern = "buildSettings\\s*=\\s*\\{[^}]*?DEBUG_INFORMATION_FORMAT[^}]*?\\}"
+        // Simpler: find all configuration names
+        let configPattern = "(/\\*\\s*)(\\w+(?:\\s+\\w+)*)(\\s*-\\s*Build configuration\\s*\\*/)"
+        if let regex = try? NSRegularExpression(pattern: configPattern) {
+            let matches = regex.matches(in: content, range: NSRange(content.startIndex..., in: content))
+            var configs: [String] = []
+            for match in matches {
+                if let range = Range(match.range(at: 2), in: content) {
+                    configs.append(String(content[range]))
+                }
+            }
+            // Prefer "Release", then anything with "Release" in it, then first non-Debug config
+            if configs.contains("Release") { return "Release" }
+            if let rel = configs.first(where: { $0.localizedCaseInsensitiveContains("release") }) { return rel }
+            if let nonDebug = configs.first(where: { !$0.localizedCaseInsensitiveContains("debug") }) { return nonDebug }
+        }
+        return "Release"
+    }
+    
+    // Detect export method from project.pbxproj (look for provisioning profile hints)
+    func exportMethodFromProject(_ pbxprojPath: String) -> String {
+        guard let data = FileManager.default.contents(atPath: pbxprojPath),
+              let content = String(data: data, encoding: .utf8) else { return "developer-id" }
+        // Check for hints of distribution type
+        if content.contains("app-store") || content.contains("APP_STORE") { return "app-store" }
+        if content.contains("developer-id") || content.contains("DEVELOPER_ID") { return "developer-id" }
+        // If it's a command-line tool target, default to developer-id
+        if content.contains("productType = \"com.apple.product-type.tool\"") { return "developer-id" }
+        return "developer-id"
+    }
+    
+    // Find stored notarytool credential profile name
+    func findNotaryCredential() -> String? {
+        // Check common credential store locations
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+        task.arguments = ["notarytool", "list-profiles"]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = pipe
+        // Try stored-credentials instead
+        let task2 = Process()
+        task2.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+        task2.arguments = ["notarytool", "history"]
+        // Try common names
+        for name in ["App Store Connect Profile", "notarytool", "AC_PASSWORD", "altool"] {
+            let checkTask = Process()
+            checkTask.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+            checkTask.arguments = ["notarytool", "history", "-p", name]
+            let checkPipe = Pipe()
+            checkTask.standardOutput = checkPipe
+            checkTask.standardError = checkPipe
+            do {
+                try checkTask.run()
+                checkTask.waitUntilExit()
+                if checkTask.terminationStatus == 0 {
+                    return name
+                }
+            } catch { continue }
+        }
+        return nil
+    }
+    
+    // --- Resolve configuration dynamically ---
+    
+    // 1) Project path: from arg, AGENT_PROJECT_FOLDER env, or current directory
+    let projectPath: String
+    if parts.count > 0 && !parts[0].isEmpty {
+        projectPath = (parts[0] as NSString).standardizingPath
+    } else if let envFolder = ProcessInfo.processInfo.environment["AGENT_PROJECT_FOLDER"], !envFolder.isEmpty {
+        projectPath = (envFolder as NSString).standardizingPath
+    } else {
+        projectPath = FileManager.default.currentDirectoryPath
+    }
+
+    
+    // Verify project directory exists
+    var isDir: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: projectPath, isDirectory: &isDir), isDir.boolValue else {
+        print("Error: Project directory not found: \(projectPath)")
+        return 1
+    }
+    
+    // 2) Auto-detect .xcodeproj
+    let detectedProjectName = findXcodeProject(in: projectPath)
+    let projectFile: String
+    if parts.count > 2 && !parts[2].isEmpty {
+        projectFile = (parts[2] as NSString).standardizingPath
+    } else if let projName = detectedProjectName {
+        projectFile = "\(projectPath)/\(projName)"
+    } else {
+        print("Error: No .xcodeproj found in \(projectPath)")
+        print("Usage: AGENT_SCRIPT_ARGS=\"/path/to/project [scheme] [projectFile] [archivePath] [teamID]\"")
+        return 1
+    }
+    
+    // 3) Scheme: from arg or auto-detect from project name
+    let scheme: String
+    if parts.count > 1 && !parts[1].isEmpty {
+        scheme = parts[1]
+    } else {
+        scheme = schemeFromProject((projectFile as NSString).lastPathComponent)
+    }
+    
+    // 4) Archive path: default to build/<scheme>.xcarchive
+    let archivePath = parts.count > 3 && !parts[3].isEmpty
+        ? (parts[3] as NSString).standardizingPath
+        : "\(projectPath)/build/\(scheme).xcarchive"
+    
+    // 5) Team ID: from arg or auto-detect from project.pbxproj
+    let teamID: String
+    if parts.count > 4 && !parts[4].isEmpty {
+        teamID = parts[4]
+    } else if let detected = teamIDFromProject("\(projectFile)/project.pbxproj") {
+        teamID = detected
+    } else {
+        print("Error: Could not auto-detect DEVELOPMENT_TEAM from project.pbxproj")
+        print("Pass team ID as an argument: AGENT_SCRIPT_ARGS=\"/path/to/project scheme teamID\"")
+        return 1
+    }
     
     let exportPath = "\(projectPath)/build/export"
     let appName = scheme
-    let credentialName = "App Store Connect Profile"
+    
+    // Auto-detect build configuration from project
+    let buildConfig = buildConfigFromProject("\(projectFile)/project.pbxproj")
+    // Auto-detect export method from project
+    let exportMethod = exportMethodFromProject("\(projectFile)/project.pbxproj")
+    // Auto-detect notarytool credential profile
+    let credentialName = findNotaryCredential() ?? "App Store Connect Profile"
     
     print("=== Starting Archive and Notarization Process ===")
-    print("Project: \(projectPath)")
-    print("Scheme: \(scheme)")
-    print("Project File: \(projectFile)")
-    print("Archive Path: \(archivePath)")
-    print("Team ID: \(teamID)")
+    print("Project Path:  \(projectPath)")
+    print("Scheme:        \(scheme)")
+    print("Project File:  \(projectFile)")
+    print("Archive Path:  \(archivePath)")
+    print("Team ID:       \(teamID)")
+    print("Build Config:  \(buildConfig)")
+    print("Export Method: \(exportMethod)")
+    print("Export Path:   \(exportPath)")
     print("")
     fflush(stdout)
     
@@ -82,7 +244,7 @@ public func scriptMain() -> Int32 {
         arguments: [
             "-scheme", scheme,
             "-project", projectFile,
-            "-configuration", "Release",
+            "-configuration", buildConfig,
             "-archivePath", archivePath,
             "archive"
         ],
@@ -99,14 +261,13 @@ public func scriptMain() -> Int32 {
     // Step 2: Export Archive
     print("Step 2: Exporting Archive...")
     
-    // Create ExportOptions.plist
     let exportOptionsContent = """
     <?xml version="1.0" encoding="UTF-8"?>
     <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
     <plist version="1.0">
     <dict>
         <key>method</key>
-        <string>developer-id</string>
+        <string>\(exportMethod)</string>
         <key>teamID</key>
         <string>\(teamID)</string>
         <key>signingStyle</key>
