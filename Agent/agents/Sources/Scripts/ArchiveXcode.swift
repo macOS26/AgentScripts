@@ -301,19 +301,30 @@ public func scriptMain() -> Int32 {
     }
     print("\nArchive exported successfully!\n")
     
-    // Find the exported app
-    let exportedAppPath = "\(exportPath)/\(appName).app"
-    
-    guard FileManager.default.fileExists(atPath: exportedAppPath) else {
-        print("Error: Exported app not found at \(exportedAppPath)")
-        return 1
+    // Find the exported app dynamically — scan the export directory for any .app bundle
+    let exportedAppPath: String
+    if let exportContents = try? FileManager.default.contentsOfDirectory(atPath: exportPath),
+       let foundApp = exportContents.first(where: { $0.hasSuffix(".app") }) {
+        exportedAppPath = "\(exportPath)/\(foundApp)"
+        print("Found exported app: \(foundApp)")
+    } else {
+        // Fallback to scheme-derived name
+        let fallbackPath = "\(exportPath)/\(appName).app"
+        if FileManager.default.fileExists(atPath: fallbackPath) {
+            exportedAppPath = fallbackPath
+        } else {
+            print("Error: No .app bundle found in export directory \(exportPath)")
+            return 1
+        }
     }
     
+    // Derive actual app name from discovered bundle (may differ from scheme name)
+    let actualAppName = (exportedAppPath as NSString).lastPathComponent.replacingOccurrences(of: ".app", with: "")
     print("Exported app: \(exportedAppPath)\n")
     
     // Step 3: Create ZIP for notarization
     print("Step 3: Creating ZIP for Notarization...")
-    let zipPath = "\(exportPath)/\(appName)-notarize.zip"
+    let zipPath = "\(exportPath)/\(actualAppName)-notarize.zip"
     
     let zipResult = runProcess(
         executable: "/usr/bin/ditto",
