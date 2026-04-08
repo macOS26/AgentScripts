@@ -19,7 +19,14 @@ public func scriptMain() -> Int32 {
     let releaseVersion = args[0]
     let releaseNotes = args.count > 1 ? args[1].replacingOccurrences(of: "\\n", with: "\n") : "Release \(releaseVersion)"
     let binaryPath = args.count > 2 ? args[2] : ""
-    let workingDir = args.count > 3 ? args[3] : FileManager.default.currentDirectoryPath
+    let workingDir: String
+    if args.count > 3 && !args[3].isEmpty {
+        workingDir = args[3]
+    } else if let envFolder = ProcessInfo.processInfo.environment["AGENT_PROJECT_FOLDER"], !envFolder.isEmpty {
+        workingDir = envFolder
+    } else {
+        workingDir = FileManager.default.currentDirectoryPath
+    }
     
     // Check common paths for gh CLI
     let ghPaths = [
