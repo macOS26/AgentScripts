@@ -33,6 +33,7 @@ let scriptNames = [
     "SDEFtoJSON",
     "SafariSearch",
     "SaveImageFromClipboard",
+    "ShortenComments",
     "Selenium",
     "SendGroupMessage",
     "SendMessage",
@@ -155,6 +156,8 @@ let scriptTargets: [Target] = scriptNames.map { name in
 let package = Package(
     name: "agents",
     platforms: [.macOS(.v26)],
+    // swift-tools-version: 6.2
+    // Version: 1.0.6
     products: scriptProducts,
     dependencies: packageDependencies,
     targets: coreTargets + scriptTargets
